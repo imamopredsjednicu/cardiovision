@@ -21,9 +21,12 @@ def extract_rr_features(r_peaks, fs=360):
     """Računa prethodni i sljedeći RR-interval (u sekundama) za svaki R-vrh.
     Prvi vrh nema prethodnog, a zadnji sljedećeg intervala, pa se za njih
     uzima najbliži postojeći interval.
-    Vraća NumPy matricu oblika (broj_vrhova, 2) sa stupcima [pre_rr, post_rr].
+    Vraća NumPy matricu oblika (broj_vrhova, 2) sa stupcima [pre_rr, post_rr],
+    odnosno praznu matricu oblika (0, 2) ako je vrhova manje od dva.
     """
-    r_peaks = np.asarray(r_peaks)
+    if fs is None or not np.isfinite(fs) or fs <= 0:
+        raise ValueError(f"Frekvencija uzorkovanja mora biti pozitivan broj, a ne {fs}.")
+    r_peaks = np.ravel(np.asarray([] if r_peaks is None else r_peaks, dtype=float))
     if r_peaks.size < 2:
         return np.empty((0, 2))
 
@@ -55,9 +58,14 @@ def detect_arrhythmias(signal, r_peaks, fs=360):
     """Označava otkucaje čiji prethodni RR-interval odstupa od lokalnog
     medijana više od RR_TOLERANCE (prerani ili zakašnjeli otkucaji).
     Vraća listu indeksa uzoraka R-vrhova s aritmijom, udio aritmičnih otkucaja.
+    S manje od dva ispravna vrha (ili bez signala) vraća ([], 0.0).
     """
-    r_peaks = np.asarray(r_peaks)
-    r_peaks = r_peaks[(r_peaks >= 0) & (r_peaks < len(signal))]
+    n_samples = 0 if signal is None else np.atleast_1d(np.asarray(signal)).shape[0]
+    r_peaks = np.ravel(np.asarray([] if r_peaks is None else r_peaks, dtype=float))
+    r_peaks = r_peaks[np.isfinite(r_peaks)]
+    # duplikati bi dali RR-interval 0, a time i dijeljenje nulom
+    r_peaks = np.unique(r_peaks.astype(int))
+    r_peaks = r_peaks[(r_peaks >= 0) & (r_peaks < n_samples)]
     if r_peaks.size < 2:
         return [], 0.0
 
@@ -72,17 +80,28 @@ def detect_arrhythmias(signal, r_peaks, fs=360):
 def label_peaks_from_annotations(r_peaks, annotations, fs=360, max_offset=0.1):
     """Svakom R-vrhu pridružuje najbližu anotaciju unutar max_offset sekundi.
     Vraća polje oznaka: 0 = normalan otkucaj, 1 = aritmija, -1 = bez anotacije.
+    Bez anotacija otkucaja svi vrhovi dobivaju oznaku -1.
     """
-    r_peaks = np.asarray(r_peaks)
-    samples = np.asarray(annotations["sample"])
-    symbols = np.asarray(annotations["symbol"])
+    r_peaks = np.ravel(np.asarray([] if r_peaks is None else r_peaks))
+    annotations = annotations or {}
+    samples = np.ravel(np.asarray(annotations.get("sample", []), dtype=int))
+    symbols = np.ravel(np.asarray(annotations.get("symbol", []), dtype=str))
+    if samples.size != symbols.size:
+        raise ValueError("Anotacije moraju imati jednak broj uzoraka i oznaka.")
 
     is_beat = np.isin(symbols, list(BEAT_SYMBOLS))
     samples, symbols = samples[is_beat], symbols[is_beat]
+    if samples.size == 0 or r_peaks.size == 0:
+        return np.full(r_peaks.size, -1, dtype=int)
 
-    pos = np.clip(np.searchsorted(samples, r_peaks), 1, len(samples) - 1)
-    left, right = samples[pos - 1], samples[pos]
-    nearest = np.where(r_peaks - left <= right - r_peaks, pos - 1, pos)
+    if samples.size == 1:
+        nearest = np.zeros(r_peaks.size, dtype=int)
+    else:
+        order = np.argsort(samples, kind="stable")
+        samples, symbols = samples[order], symbols[order]
+        pos = np.clip(np.searchsorted(samples, r_peaks), 1, len(samples) - 1)
+        left, right = samples[pos - 1], samples[pos]
+        nearest = np.where(r_peaks - left <= right - r_peaks, pos - 1, pos)
 
     labels = np.where(np.isin(symbols[nearest], list(NORMAL_SYMBOLS)), 0, 1)
     labels[np.abs(samples[nearest] - r_peaks) > max_offset * fs] = -1

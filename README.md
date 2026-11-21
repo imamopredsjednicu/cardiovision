@@ -19,7 +19,7 @@ Backend šalje podatke sučelju u obliku Python rječnika (dict):
 {
     "status": "success",          status analize
     "message": "OK",              poruka o grešci
-    "bpm": 75,                    izračunati prosječni BPM
+    "bpm": 75,                    izračunani prosječni BPM
     "signal_raw": [...],          sirovi EKG signal
     "signal_filtered": [...],     filtrirani EKG signal
     "r_peaks": [120, 450, 780],   indeksi uzoraka gdje se nalaze R-vrhovi

@@ -1,6 +1,8 @@
 """Generiranje PDF medicinskog nalaza EKG analize pomoću fpdf2 knjižnice."""
 
+import math
 from datetime import datetime
+from numbers import Real
 from pathlib import Path
 
 from fpdf import FPDF
@@ -34,12 +36,41 @@ def _setup_font(pdf):
             pdf.add_font(FONT_NAME, "", str(regular))
             pdf.add_font(FONT_NAME, "B", str(bold))
             return FONT_NAME, str
-    return "Helvetica", lambda text: str(text).translate(ASCII_FALLBACK)
+    # znakovi izvan latin-1 koje Helvetica ne može prikazati postaju "?"
+    return "Helvetica", lambda text: (
+        str(text).translate(ASCII_FALLBACK).encode("latin-1", "replace").decode("latin-1")
+    )
+
+
+def _is_missing(value):
+    """Je li vrijednost nedostajuća: None, prazan tekst ili NaN/Inf broj."""
+    if value is None:
+        return True
+    if isinstance(value, str):
+        return not value.strip()
+    if isinstance(value, Real):
+        return not math.isfinite(value)
+    return False
 
 
 def _format_value(value, fmt="{}"):
-    """Formatira vrijednost za prikaz u tablici; None prikazuje kao crticu."""
-    return "-" if value is None else fmt.format(value)
+    """Formatira vrijednost za prikaz u tablici; nedostajuće vrijednosti
+    prikazuje kao crticu, a one koje ne odgovaraju formatu kao običan tekst.
+    """
+    if _is_missing(value):
+        return "-"
+    try:
+        return fmt.format(value)
+    except (ValueError, TypeError):
+        return str(value)
+
+
+def _as_percent(ratio):
+    """Pretvara udio (0 - 1) u postotak; vraća None ako udio nije broj."""
+    try:
+        return float(ratio) * 100
+    except (ValueError, TypeError):
+        return None
 
 
 def _add_table(pdf, font, text, title, rows):
@@ -59,8 +90,13 @@ def generate_pdf_report(patient_data, analysis_data, graph_image_path, output_fi
     """Stvara PDF nalaz s podacima o pacijentu, rezultatima analize i EKG grafikonom.
     patient_data: rječnik s ključevima first_name, last_name, date_of_birth, gender.
     analysis_data: rječnik s ključevima bpm, total_beats, arrhythmia_ratio (udio 0 - 1).
+    Nedostajući podaci prikazuju se kao "-", a nedostajući ili neispravan
+    grafikon zamjenjuje se napomenom.
     Vraća putanju spremljene PDF datoteke.
     """
+    patient_data = patient_data or {}
+    analysis_data = analysis_data or {}
+
     pdf = FPDF(orientation="P", unit="mm", format="A4")
     pdf.set_auto_page_break(auto=True, margin=15)
     pdf.add_page()
@@ -83,24 +119,33 @@ def generate_pdf_report(patient_data, analysis_data, graph_image_path, output_fi
         ("Spol", _format_value(patient_data.get("gender"))),
     ])
 
-    ratio = analysis_data.get("arrhythmia_ratio")
     _add_table(pdf, font, text, "Rezultati analize", [
         ("Prosječni BPM", _format_value(analysis_data.get("bpm"), "{:.1f}")),
         ("Ukupno detektiranih otkucaja", _format_value(analysis_data.get("total_beats"))),
         ("Udio aritmičnih otkucaja",
-         _format_value(None if ratio is None else ratio * 100, "{:.2f} %")),
+         _format_value(_as_percent(analysis_data.get("arrhythmia_ratio")), "{:.2f} %")),
     ])
 
     # EKG grafikon centriran po širini stranice
-    if graph_image_path and Path(graph_image_path).is_file():
-        pdf.set_font(font, "B", 13)
-        pdf.cell(0, 10, text("EKG grafikon"), new_x="LMARGIN", new_y="NEXT")
-        pdf.image(str(graph_image_path), x="C", w=pdf.epw)
-    else:
-        pdf.set_font(font, "", 11)
-        pdf.cell(0, 10, text("Grafikon nije dostupan."), new_x="LMARGIN", new_y="NEXT")
+    pdf.set_font(font, "B", 13)
+    pdf.cell(0, 10, text("EKG grafikon"), new_x="LMARGIN", new_y="NEXT")
+    pdf.set_font(font, "", 11)
+    try:
+        has_graph = bool(graph_image_path) and Path(graph_image_path).is_file()
+    except (TypeError, OSError):
+        has_graph = False
 
-    output_path = Path(output_filename)
+    if not has_graph:
+        pdf.cell(0, 10, text("Grafikon nije dostupan."), new_x="LMARGIN", new_y="NEXT")
+    else:
+        try:
+            pdf.image(str(graph_image_path), x="C", w=pdf.epw)
+        except Exception:
+            # oštećena slika ili nepodržan format ne smiju zaustaviti izradu nalaza
+            pdf.cell(0, 10, text("Grafikon nije moguće učitati."),
+                     new_x="LMARGIN", new_y="NEXT")
+
+    output_path = Path(output_filename or "nalaz.pdf")
     output_path.parent.mkdir(parents=True, exist_ok=True)
     pdf.output(str(output_path))
     return output_path

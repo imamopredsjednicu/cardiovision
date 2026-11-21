@@ -15,6 +15,8 @@ def _record_path(file_path):
     """Vraća putanju do zapisa bez ekstenzije.
     Podiže FileNotFoundError ako pripadajuća .hea datoteka ne postoji.
     """
+    if file_path is None or not str(file_path).strip():
+        raise FileNotFoundError("Putanja do EKG zapisa nije zadana.")
     path = Path(file_path)
     if path.suffix.lower() in WFDB_EXTENSIONS:
         path = path.with_suffix("")
@@ -33,8 +35,10 @@ def load_ecg_record(file_path):
     except Exception as e:
         raise ValueError(f"Greška pri čitanju EKG zapisa '{path}': {e}") from e
 
-    if record.p_signal is None:
+    if record.p_signal is None or record.p_signal.ndim != 2 or record.p_signal.shape[1] == 0:
         raise ValueError(f"EKG zapis '{path}' ne sadrži fizički signal.")
+    if not record.fs or record.fs <= 0:
+        raise ValueError(f"EKG zapis '{path}' ima neispravnu frekvenciju uzorkovanja ({record.fs}).")
 
     return {
         "p_signal": record.p_signal,
@@ -51,6 +55,8 @@ def load_ecg_annotations(file_path):
         path = _record_path(file_path)
         annotation = wfdb.rdann(str(path), "atr")
     except Exception:
+        return None
+    if annotation.sample is None or annotation.symbol is None:
         return None
 
     return {
